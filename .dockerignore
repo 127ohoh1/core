@@ -1,0 +1,6 @@
+.git
+.devtls
+bin
+dist
+*.test
+benchmarks/results

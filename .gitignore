@@ -1,0 +1,11 @@
+/bin/
+/dist/
+*.test
+*.out
+*.pprof
+.env
+*.key
+*.pem
+!testdata/*.pem
+coverage.txt
+/.devtls/

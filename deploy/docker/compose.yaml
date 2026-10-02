@@ -1,0 +1,145 @@
+# Local development stack. Everything here is DEVELOPMENT-ONLY: placeholder
+# credentials, a generated local CA, simulated payments, plain-HTTP control plane.
+#
+#   make up          # or: docker compose -f deploy/docker/compose.yaml up --build
+#
+# Services: control-plane, edge, demo-origin + demo-client (exposes the origin),
+# postgres, redis, prometheus, grafana.
+#
+# NOTE: postgres and redis are provisioned because the architecture uses them
+# (durable state, tunnel directory, coordination), but the reference control
+# plane currently runs on InMemory stores and only the optional multi-edge
+# profile uses Redis. See docs/operations.md "Known limitations".
+name: 127ohoh1
+x-dev-env: &dev-env
+  OHOH_APP_ENV: development
+  OHOH_BASE_DOMAIN: 127ohoh1.localhost
+  OHOH_EDGE_SERVICE_TOKEN: ${OHOH_EDGE_SERVICE_TOKEN:-dev-edge-token-change-me-0123456789}
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ohoh
+      POSTGRES_PASSWORD: dev-only-not-a-secret
+      POSTGRES_DB: ohoh
+    ports: ["127.0.0.1:${OHOH_PG_PORT:-15432}:5432"]
+    volumes:
+      - ../../migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ohoh"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:${OHOH_REDIS_PORT:-16379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  control-plane:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: control-plane }
+    environment:
+      <<: *dev-env
+      OHOH_LISTEN_ADDR: ":8080"
+      OHOH_METRICS_ADDR: ":9101"
+      OHOH_EDGE_TUNNEL_ADDR: edge:7443          # what containers use; host clients pass --edge localhost:7443
+      OHOH_PUBLIC_PORT: "8443"
+      OHOH_DEVELOPMENT_PAYMENTS: "true"          # simulated settlement; refused when app_env=production
+      OHOH_ADMIN_TOKEN: ${OHOH_ADMIN_TOKEN:-dev-admin-token-change-me-0123456789}
+    ports: ["127.0.0.1:${OHOH_CP_PORT:-8080}:8080", "127.0.0.1:${OHOH_CP_METRICS_PORT:-19101}:9101"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  edge:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: edge }
+    user: "${OHOH_UID:-1000}:${OHOH_GID:-1000}"
+    depends_on:
+      control-plane: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      <<: *dev-env
+      OHOH_EDGE_ID: edge-1
+      OHOH_CONTROL_PLANE_URL: http://control-plane:8080
+      OHOH_INGRESS_ADDR: ":8443"
+      OHOH_TUNNEL_ADDR: ":7443"
+      OHOH_ADMIN_ADDR: ":9100"
+      OHOH_DEV_TLS_DIR: /devtls
+      OHOH_REDIS_URL: redis://redis:6379/0        # tunnel directory (multi-edge routing); the edge degrades gracefully without it
+      OHOH_INTERNAL_ADDR: ":9200"                 # authenticated inter-edge hop
+      OHOH_ADVERTISE_INTERNAL: edge:9200
+    volumes:
+      - ../../.devtls:/devtls                  # generated local CA + certificate; host clients trust .devtls/ca.pem
+    ports: ["127.0.0.1:${OHOH_INGRESS_PORT:-8443}:8443", "127.0.0.1:${OHOH_TUNNEL_PORT:-7443}:7443", "127.0.0.1:${OHOH_EDGE_ADMIN_PORT:-19100}:9100"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9100/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Second edge for the multi-edge development profile:  docker compose --profile multi-edge up
+  edge-2:
+    profiles: ["multi-edge"]
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: edge }
+    user: "${OHOH_UID:-1000}:${OHOH_GID:-1000}"
+    depends_on:
+      edge: { condition: service_healthy }
+    environment:
+      <<: *dev-env
+      OHOH_EDGE_ID: edge-2
+      OHOH_CONTROL_PLANE_URL: http://control-plane:8080
+      OHOH_INGRESS_ADDR: ":8443"
+      OHOH_TUNNEL_ADDR: ":7443"
+      OHOH_ADMIN_ADDR: ":9100"
+      OHOH_DEV_TLS_DIR: /devtls
+      OHOH_REDIS_URL: redis://redis:6379/0
+      OHOH_INTERNAL_ADDR: ":9200"
+      OHOH_ADVERTISE_INTERNAL: edge-2:9200
+    volumes:
+      - ../../.devtls:/devtls
+    ports: ["127.0.0.1:${OHOH_INGRESS2_PORT:-8444}:8443", "127.0.0.1:${OHOH_TUNNEL2_PORT:-7444}:7443"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9100/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  demo-origin:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: demo-origin }
+    command: ["-addr", "127.0.0.1:3000"]     # loopback only: the client shares this network namespace
+
+  demo-client:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: cli }
+    user: "${OHOH_UID:-1000}:${OHOH_GID:-1000}"
+    network_mode: "service:demo-origin"        # the origin is on this container's loopback: no unsafe flags needed
+    restart: on-failure
+    depends_on:
+      edge: { condition: service_healthy }
+    entrypoint: ["127ohoh1"]
+    command: ["expose", "http://127.0.0.1:3000", "--api", "http://control-plane:8080", "--edge", "edge:7443",
+              "--ca", "/devtls/ca.pem", "--identity", "/tmp/id_ed25519", "--verbose"]
+    volumes:
+      - ../../.devtls:/devtls:ro
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["127.0.0.1:${OHOH_PROM_PORT:-19090}:9090"]
+    depends_on: [control-plane, edge]
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: dev-only-not-a-secret
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:${OHOH_GRAFANA_PORT:-13001}:3000"]
+    depends_on: [prometheus]

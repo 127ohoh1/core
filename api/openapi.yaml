@@ -1,0 +1,609 @@
+openapi: 3.1.0
+info:
+  title: 127ohoh1 control-plane API (development reference)
+  version: 0.1.0
+  description: >
+    Public reference API. Paths are added as phases land. Payment endpoints are
+    simulated, development-only, and fail closed unless explicitly enabled.
+    All timestamps are UTC RFC 3339. Errors use the envelope in `Error`.
+servers:
+  - url: http://localhost:8080
+security:
+  - session: []
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Liveness
+      responses: { "200": { description: ok } }
+  /readyz:
+    get:
+      security: []
+      summary: Readiness
+      responses: { "200": { description: ready }, "503": { description: not ready } }
+  /v1/keys:
+    get:
+      security: []
+      summary: Public keys that verify tunnel credentials (supports rotation overlap)
+      responses:
+        "200":
+          description: Key set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KeySet' }
+  /v1/auth/challenges:
+    post:
+      security: []
+      summary: Request a single-use, short-lived challenge for a public key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key]
+              additionalProperties: false
+              properties:
+                public_key: { type: string, description: "Unpadded base64url Ed25519 public key (32 bytes)" }
+      responses:
+        "201":
+          description: Challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Challenge' }
+        "400": { $ref: '#/components/responses/Error' }
+        "429": { $ref: '#/components/responses/Error' }
+  /v1/auth/sessions:
+    post:
+      security: []
+      summary: Exchange a signed challenge for a short-lived session token
+      description: >
+        The signature covers the canonical bytes defined in docs/tunnel-protocol.md
+        (domain-separated, length-prefixed). The challenge is consumed even if
+        verification fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge_id, nonce, signature]
+              additionalProperties: false
+              properties:
+                challenge_id: { type: string }
+                nonce: { type: string }
+                signature: { type: string }
+      responses:
+        "201":
+          description: Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+  /v1/endpoints:
+    get:
+      summary: List the caller's live endpoints
+      responses:
+        "200":
+          description: Endpoints
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoints: { type: array, items: { $ref: '#/components/schemas/Endpoint' } }
+    post:
+      summary: Create a random free endpoint
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                kind: { type: string, enum: [random] }
+      responses:
+        "201":
+          description: Created (or replayed via Idempotent-Replayed header)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Endpoint' }
+        "409": { $ref: '#/components/responses/Error' }
+        "429": { $ref: '#/components/responses/Error' }
+  /v1/endpoints/{endpoint_id}:
+    parameters:
+      - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get an owned endpoint
+      responses:
+        "200":
+          description: Endpoint
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Endpoint' }
+        "404": { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Release an owned endpoint (idempotent)
+      responses:
+        "200":
+          description: Released endpoint
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Endpoint' }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/endpoints/{endpoint_id}/tunnel-credentials:
+    parameters:
+      - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Issue a short-lived tunnel credential scoped to one endpoint
+      responses:
+        "201":
+          description: Credential
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TunnelCredential' }
+        "409": { $ref: '#/components/responses/Error' }
+        "410": { $ref: '#/components/responses/Error' }
+  /v1/plans:
+    get:
+      security: []
+      summary: Plan catalog (canonical plans; decimal SI units; prices per month per name)
+      responses:
+        "200":
+          description: Plans
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans: { type: array, items: { $ref: '#/components/schemas/Plan' } }
+                  units: { type: string }
+  /v1/endpoints/reserve:
+    post:
+      summary: Reserve a hostname; returns 402 with an offer if a paid entitlement is missing
+      description: >
+        Naturally idempotent. An unpaid retry returns the same open offer; a retry
+        after settlement (same Idempotency-Key) returns the reserved endpoint.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, plan]
+              additionalProperties: false
+              properties:
+                name: { type: string, description: "Lowercase DNS label, 3-63 chars" }
+                plan: { type: string, enum: [tier_1, tier_2, tier_3] }
+      responses:
+        "201":
+          description: Reserved endpoint created
+          content: { application/json: { schema: { $ref: '#/components/schemas/Endpoint' } } }
+        "200":
+          description: Endpoint already reserved by the caller
+          content: { application/json: { schema: { $ref: '#/components/schemas/Endpoint' } } }
+        "400": { $ref: '#/components/responses/Error' }
+        "402":
+          description: Payment required (machine-readable offer; see docs/payment-protocol.md)
+          headers:
+            Cache-Control: { schema: { type: string, enum: [no-store] } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/PaymentRequired' } } }
+        "409": { $ref: '#/components/responses/Error' }
+  /v1/offers:
+    post:
+      summary: Create (or reuse) an offer without reserving
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, plan]
+              additionalProperties: false
+              properties:
+                name: { type: string }
+                plan: { type: string, enum: [tier_1, tier_2, tier_3] }
+      responses:
+        "201":
+          description: Offer
+          content: { application/json: { schema: { $ref: '#/components/schemas/Offer' } } }
+        "400": { $ref: '#/components/responses/Error' }
+        "409": { $ref: '#/components/responses/Error' }
+  /v1/offers/{offer_id}:
+    parameters:
+      - { name: offer_id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Offer status with its payment (owner only)
+      responses:
+        "200":
+          description: Offer and payment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer: { $ref: '#/components/schemas/Offer' }
+                  payment: { $ref: '#/components/schemas/Payment' }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/payments/{payment_id}:
+    parameters:
+      - { name: payment_id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Payment status (owner only)
+      responses:
+        "200":
+          description: Payment
+          content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/payments/{payment_id}/simulate-settlement:
+    parameters:
+      - { name: payment_id, in: path, required: true, schema: { type: string } }
+    post:
+      summary: "DEVELOPMENT ONLY: settle a simulated payment"
+      description: >
+        Fails closed with 404 unless development payments are explicitly enabled
+        and app_env is not production. Idempotent: repeated calls grant one entitlement.
+      responses:
+        "200":
+          description: Payment (ENTITLEMENT_GRANTED)
+          content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/endpoints/{endpoint_id}/policy:
+    parameters:
+      - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Resolved enforcement policy (owner or edge service credential)
+      description: Contains limits and lifecycle state only; no price, asset, wallet or plan fields.
+      responses:
+        "200":
+          description: Policy
+          content: { application/json: { schema: { $ref: '#/components/schemas/EndpointPolicy' } } }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/endpoints/{endpoint_id}/usage:
+    parameters:
+      - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Current-period usage (owner or edge service credential)
+      responses:
+        "200":
+          description: Usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpoint_id: { type: string }
+                  period_start: { type: string, format: date-time }
+                  period_end: { type: string, format: date-time }
+                  used_bytes: { type: integer }
+                  limit_bytes: { type: integer }
+                  remaining_bytes: { type: integer }
+                  policy_version: { type: integer }
+  /v1/usage/batches:
+    post:
+      summary: "Edge service: report usage (idempotent per edge_id + batch_id)"
+      security: [ { edge: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [edge_id, batch_id, items]
+              properties:
+                edge_id: { type: string }
+                batch_id: { type: string }
+                items:
+                  type: array
+                  maxItems: 1000
+                  items:
+                    type: object
+                    properties:
+                      endpoint_id: { type: string }
+                      period_start: { type: string, format: date-time, description: "first instant of a UTC month" }
+                      bytes: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Applied (Idempotent-Replayed header on duplicates)
+        "400": { $ref: '#/components/responses/Error' }
+        "401": { $ref: '#/components/responses/Error' }
+  /v1/presence:
+    post:
+      summary: "Edge service: report tunnel connectivity (drives the 24 h free-name inactivity clock)"
+      security: [ { edge: [] } ]
+      responses:
+        "200": { description: Applied }
+  /v1/policies/changes:
+    get:
+      summary: "Edge service: long-poll the policy change feed"
+      security: [ { edge: [] } ]
+      parameters:
+        - { name: since, in: query, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: wait, in: query, schema: { type: integer, minimum: 0, maximum: 30 } }
+      responses:
+        "200":
+          description: Changes (reset=true means refresh everything)
+  /v1/hostnames/{label}:
+    get:
+      summary: "Edge service: what one tenant label is (an active reserved name may be issued a certificate before its first tunnel)"
+      security: [ { edge: [] } ]
+      parameters:
+        - { name: label, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Hostname status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [endpoint_id, kind, state]
+                properties:
+                  endpoint_id: { type: string }
+                  kind: { type: string, enum: [random, reserved] }
+                  state: { type: string, enum: [active, suspended, expired, released, pending] }
+        "401": { $ref: '#/components/responses/Error' }
+        "404": { $ref: '#/components/responses/Error' }
+  /v1/admin/endpoints/{endpoint_id}/suspend:
+    post:
+      summary: "Administrative hook: suspend an endpoint (audited; disabled unless an admin token is configured)"
+      security: [ { admin: [] } ]
+      parameters:
+        - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+      responses: { "200": { description: Suspended }, "404": { $ref: '#/components/responses/Error' } }
+  /v1/admin/endpoints/{endpoint_id}/unsuspend:
+    post:
+      summary: "Administrative hook: restore a suspended endpoint"
+      security: [ { admin: [] } ]
+      parameters:
+        - { name: endpoint_id, in: path, required: true, schema: { type: string } }
+      responses: { "200": { description: Restored } }
+  /v1/admin/principals/{principal_id}/suspend:
+    post:
+      summary: "Administrative hook: suspend a principal (all endpoints resolve to suspended)"
+      security: [ { admin: [] } ]
+      parameters:
+        - { name: principal_id, in: path, required: true, schema: { type: string } }
+      responses: { "200": { description: Suspended } }
+  /v1/admin/emergency:
+    post:
+      summary: "Administrative hook: global safety override (all endpoints resolve to suspended)"
+      security: [ { admin: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, required: [enabled], properties: { enabled: { type: boolean }, reason: { type: string, maxLength: 256 } } }
+      responses: { "200": { description: Applied } }
+  /v1/abuse-reports:
+    post:
+      security: []
+      summary: Public abuse-report intake (no account needed; rate limited; nothing is enforced automatically)
+      description: >
+        Bounded and sanitised. Reported URLs are stored as text and never fetched.
+        Detection, triage, case management and appeals are outside the public reference.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname, category]
+              additionalProperties: false
+              properties:
+                hostname: { type: string, description: "Tunnel host or label being reported" }
+                category: { type: string, enum: [malware, phishing, illegal_content, spam, harassment, copyright, other] }
+                description: { type: string, maxLength: 2000 }
+                url: { type: string, maxLength: 500 }
+                contact: { type: string, maxLength: 200, description: "Optional, voluntarily supplied" }
+      responses:
+        "202": { description: Accepted for human review }
+        "400": { $ref: '#/components/responses/Error' }
+        "413": { $ref: '#/components/responses/Error' }
+        "429": { $ref: '#/components/responses/Error' }
+  /v1/admin/abuse-reports:
+    get:
+      summary: "Operator: list reports (links to the suspension hooks via endpoint_id)"
+      security: [ { admin: [] } ]
+      parameters:
+        - { name: hostname, in: query, schema: { type: string } }
+      responses: { "200": { description: Reports }, "401": { $ref: '#/components/responses/Error' } }
+components:
+  securitySchemes:
+    session:
+      type: http
+      scheme: bearer
+    edge:
+      type: http
+      scheme: bearer
+      description: Edge service credential (constant-time compared)
+    admin:
+      type: http
+      scheme: bearer
+      description: Administrative token; the admin API is absent (404) when none is configured
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 8-128 printable ASCII characters. Reuse with a different request returns 409 idempotency_key_reused.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string }
+            details: { type: object }
+    KeySet:
+      type: object
+      properties:
+        algorithm: { type: string }
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kid: { type: string }
+              public_key: { type: string }
+    Challenge:
+      type: object
+      properties:
+        challenge_id: { type: string }
+        nonce: { type: string, description: "base64url, at least 128 bits" }
+        audience: { type: string }
+        protocol_version: { type: integer }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        session_token: { type: string }
+        expires_at: { type: string, format: date-time }
+        principal_id: { type: string }
+        fingerprint: { type: string }
+    Endpoint:
+      type: object
+      properties:
+        id: { type: string }
+        hostname: { type: string }
+        url: { type: string }
+        kind: { type: string, enum: [random, reserved] }
+        state: { type: string, enum: [PENDING, ACTIVE, SUSPENDED, EXPIRED, RELEASED] }
+        plan: { type: string }
+        created_at: { type: string, format: date-time }
+        last_active_at: { type: string, format: date-time }
+    TunnelCredential:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+        endpoint_id: { type: string }
+        hostname: { type: string }
+        url: { type: string }
+        edge:
+          type: object
+          properties:
+            addr: { type: string }
+            audience: { type: string }
+    Plan:
+      type: object
+      properties:
+        id: { type: string, enum: [free, tier_1, tier_2, tier_3] }
+        name: { type: string }
+        price:
+          type: object
+          properties:
+            amount: { type: string, description: "decimal string, per month per name" }
+            asset: { type: string }
+            interval: { type: string }
+            unit: { type: string }
+        bandwidth_bytes_per_second: { type: integer }
+        burst_bytes: { type: integer }
+        monthly_transfer_bytes: { type: integer }
+        hostname: { type: string, enum: [random, reserved] }
+    Offer:
+      type: object
+      description: Immutable terms snapshot with an expiry; not a reservation.
+      properties:
+        id: { type: string }
+        plan: { type: string }
+        status: { type: string, enum: [open, paid, expired, cancelled] }
+        scope:
+          type: object
+          properties: { type: { type: string, enum: [hostname] }, name: { type: string } }
+        price: { $ref: '#/components/schemas/Price' }
+        limits:
+          type: object
+          properties:
+            bandwidth_bytes_per_second: { type: integer }
+            monthly_transfer_bytes: { type: integer }
+        payment_methods: { type: array, items: { $ref: '#/components/schemas/PaymentMethod' } }
+        payment_id: { type: string }
+        expires_at: { type: string, format: date-time }
+        status_url: { type: string }
+        checkout_url:
+          type: string
+          format: uri
+          description: "Optional https page where this one offer can be paid in a browser wallet; valid while the offer is open. The link is a capability: anyone holding it can view and pay the offer (never redirect the name)."
+    Price:
+      type: object
+      properties:
+        amount: { type: string }
+        asset: { type: string }
+        interval: { type: string }
+        unit: { type: string }
+    PaymentMethod:
+      type: object
+      properties:
+        type: { type: string, description: "Network-neutral; the reference build only lists development_crypto" }
+        network: { type: string }
+        asset: { type: string }
+        payment_request: { type: string }
+        simulated: { type: boolean }
+    PaymentRequired:
+      type: object
+      properties:
+        error: { $ref: '#/components/schemas/Error/properties/error' }
+        resource:
+          type: object
+          properties: { type: { type: string }, name: { type: string } }
+        offers: { type: array, items: { $ref: '#/components/schemas/Offer' } }
+    Payment:
+      type: object
+      properties:
+        id: { type: string }
+        offer_id: { type: string }
+        state: { type: string, enum: [CREATED, AWAITING_PAYMENT, SEEN, CONFIRMING, SETTLED, ENTITLEMENT_GRANTED, EXPIRED, FAILED] }
+        amount: { type: string }
+        asset: { type: string }
+        network: { type: string }
+        provider: { type: string }
+        simulated: { type: boolean }
+        failure_reason: { type: string }
+        updated_at: { type: string, format: date-time }
+    EndpointPolicy:
+      type: object
+      required: [endpoint_id, policy_version, state, limits, usage, hostname, valid_until]
+      properties:
+        endpoint_id: { type: string }
+        policy_version: { type: integer, description: monotonically increasing per endpoint }
+        state: { type: string, enum: [active, suspended, expired, released, pending] }
+        limits:
+          type: object
+          properties:
+            bandwidth_bytes_per_second: { type: integer }
+            burst_bytes: { type: integer }
+            monthly_transfer_bytes: { type: integer }
+            concurrent_requests: { type: integer }
+            max_request_header_bytes: { type: integer }
+            max_request_body_bytes: { type: integer }
+        usage:
+          type: object
+          properties:
+            period_start: { type: string, format: date-time }
+            period_end: { type: string, format: date-time }
+            used_bytes: { type: integer }
+        hostname:
+          type: object
+          properties:
+            kind: { type: string, enum: [random, reserved] }
+            inactive_expiry_seconds: { type: [integer, "null"] }
+        valid_until: { type: string, format: date-time }

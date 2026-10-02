@@ -1,0 +1,349 @@
+{
+ "title": "127ohoh1 edge & control plane (development)",
+ "uid": "ohoh-dev",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "Active tunnel sessions",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "edge_tunnel_sessions_active",
+     "legendFormat": "sessions",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "Public requests by status class",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (status_class) (rate(edge_ingress_requests_total[1m]))",
+     "legendFormat": "{{status_class}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "Request latency p50/p95/p99",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(edge_ingress_request_duration_seconds_bucket[5m])))",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(edge_ingress_request_duration_seconds_bucket[5m])))",
+     "legendFormat": "p95",
+     "refId": "B"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(edge_ingress_request_duration_seconds_bucket[5m])))",
+     "legendFormat": "p99",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "Proxied bytes/s by direction",
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (direction) (rate(edge_proxied_bytes_total[1m]))",
+     "legendFormat": "{{direction}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "Platform errors",
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (code) (rate(edge_platform_errors_total[5m]))",
+     "legendFormat": "{{code}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "Bandwidth throttle wait / quota refusals",
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "rate(edge_bandwidth_throttle_seconds_total[1m])",
+     "legendFormat": "throttle s/s",
+     "refId": "A"
+    },
+    {
+     "expr": "sum by (phase) (rate(edge_quota_exhausted_total[5m]))",
+     "legendFormat": "quota {{phase}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Policy cache: hit/miss/stale/expired",
+   "gridPos": {
+    "x": 0,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (result) (rate(edge_policy_cache_requests_total[1m]))",
+     "legendFormat": "{{result}}",
+     "refId": "A"
+    },
+    {
+     "expr": "edge_control_plane_reachable",
+     "legendFormat": "control plane reachable",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Usage pipeline",
+   "gridPos": {
+    "x": 12,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "edge_usage_unflushed_bytes",
+     "legendFormat": "unflushed bytes",
+     "refId": "A"
+    },
+    {
+     "expr": "edge_usage_batches_pending",
+     "legendFormat": "batches pending",
+     "refId": "B"
+    },
+    {
+     "expr": "rate(edge_usage_batches_retried_total[5m])",
+     "legendFormat": "retries/s",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Tunnel auth failures by reason",
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (reason) (rate(edge_tunnel_auth_failures_total[5m]))",
+     "legendFormat": "{{reason}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Control plane: requests and auth failures",
+   "gridPos": {
+    "x": 12,
+    "y": 32,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "sum by (status_class) (rate(cp_http_requests_total[1m]))",
+     "legendFormat": "{{status_class}}",
+     "refId": "A"
+    },
+    {
+     "expr": "sum by (reason) (rate(cp_auth_failures_total[5m]))",
+     "legendFormat": "auth fail {{reason}}",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Certificate expiry (seconds)",
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "edge_certificate_expiry_seconds",
+     "legendFormat": "expiry",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Process: goroutines / heap / fds",
+   "gridPos": {
+    "x": 12,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "expr": "process_goroutines",
+     "legendFormat": "goroutines",
+     "refId": "A"
+    },
+    {
+     "expr": "process_open_fds",
+     "legendFormat": "open fds",
+     "refId": "B"
+    },
+    {
+     "expr": "process_heap_alloc_bytes/1e6",
+     "legendFormat": "heap MB",
+     "refId": "C"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   }
+  }
+ ],
+ "tags": [
+  "127ohoh1"
+ ]
+}
